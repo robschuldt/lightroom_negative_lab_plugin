@@ -35,8 +35,17 @@ return {
                 { value = 'ilford_hp5_400',      title = 'Ilford HP5 Plus 400' },
                 { value = 'kodak_trix_400',      title = 'Kodak Tri-X 400' },
                 { value = 'kodak_tmax_100',      title = 'Kodak T-Max 100' },
+                { value = 'other',               title = 'Other / obscure (typed)' },
             },
         },
+        {
+            id = 'filmStockCustom',
+            title = 'Film Stock (custom name)',
+            dataType = 'string',
+            version = 1,
+            searchable = true,
+            browsable = true,
+        },
     },
-    schemaVersion = 1,
+    schemaVersion = 2,
 }
