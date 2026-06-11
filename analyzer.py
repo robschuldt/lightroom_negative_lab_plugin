@@ -53,8 +53,26 @@ def load_image(path, max_side=2000):
     return arr
 
 
-def analyze(rgb):
-    """Return (adjustments, report). Adjustments are deltas the plugin applies."""
+def analyze(rgb, profile=None):
+    """Return (adjustments, report). Adjustments are deltas the plugin applies.
+
+    `profile` is a film-stock dict (see film_profiles.py) that modulates the
+    response. When None, neutral defaults are used.
+    """
+    p = profile or {}
+    cast_correction   = p.get("cast_correction", CAST_CORRECTION)
+    temp_bias         = p.get("temp_bias", 0.0)
+    tint_bias         = p.get("tint_bias", 0.0)
+    contrast_gain     = p.get("contrast_gain", 1.0)
+    vibrance_gain     = p.get("vibrance_gain", 1.0)
+    highlight_protect = p.get("highlight_protect", 1.0)
+    shadow_gain       = p.get("shadow_gain", 1.0)
+    black_gain        = p.get("black_gain", 1.0)
+    white_gain        = p.get("white_gain", 1.0)
+    target_black      = p.get("target_black", TARGET_BLACK)
+    target_white      = p.get("target_white", TARGET_WHITE)
+    is_bw             = p.get("is_bw", False)
+
     R, G, B = rgb[..., 0], rgb[..., 1], rgb[..., 2]
     lum = 0.2126 * R + 0.7152 * G + 0.0722 * B
 
@@ -66,23 +84,26 @@ def analyze(rgb):
 
     # --- Tonal range: set sensible black & white points --------------------
     if clip_black < 0.002:                     # shadows not already crushed
-        blacks = -_clamp((lo - TARGET_BLACK) * 600, 0, MAX_BLACKS)
+        blacks = -_clamp((lo - target_black) * 600, 0, MAX_BLACKS)
     else:                                       # shadows clipping -> lift them
         blacks = _clamp(clip_black * 300, 0, 15)
+    blacks *= black_gain
 
     if clip_white < 0.002:                      # highlights have headroom
-        whites = _clamp((TARGET_WHITE - hi) * 600, 0, MAX_WHITES)
+        whites = _clamp((target_white - hi) * 600, 0, MAX_WHITES)
     else:                                       # highlights clipping -> pull back
         whites = -_clamp(clip_white * 300, 0, 15)
+    whites *= white_gain
 
     # --- Recover detail at the extremes (matters most for print) -----------
-    highlights = -_clamp(clip_white * 800, 0, MAX_HIGHLIGHTS)
-    shadows    =  _clamp((0.10 - min(lo, 0.10)) * 300, 0, MAX_SHADOWS)
+    highlights = -_clamp(clip_white * 800, 0, MAX_HIGHLIGHTS) * highlight_protect
+    shadows    =  _clamp((0.10 - min(lo, 0.10)) * 300, 0, MAX_SHADOWS) * shadow_gain
 
     # --- Add contrast only if the image is flat ----------------------------
     spread = hi - lo
     contrast = _clamp((TARGET_SPREAD - spread) * 60, 0, MAX_CONTRAST) \
         if spread < TARGET_SPREAD else 0.0
+    contrast *= contrast_gain
 
     # --- Gentle exposure nudge only for gross under/over-exposure ----------
     exposure = 0.0
@@ -104,14 +125,23 @@ def analyze(rgb):
     eps = 1e-4
     warm = math.log((mR + eps) / (mB + eps))    # >0 => too red/warm
     green = math.log((mG + eps) / (((mR + mB) / 2) + eps))  # >0 => too green
-    temp_shift = _clamp(-warm * 1.2, -1, 1) * CAST_CORRECTION   # cool a warm image
-    tint_shift = _clamp(green * 1.2, -1, 1) * CAST_CORRECTION   # add magenta if green
+    temp_shift = _clamp(-warm * 1.2, -1, 1) * cast_correction + temp_bias
+    tint_shift = _clamp(green * 1.2, -1, 1) * cast_correction + tint_bias
+    temp_shift = _clamp(temp_shift, -1, 1)
+    tint_shift = _clamp(tint_shift, -1, 1)
 
     # --- Vibrance: small lift if the frame is dull -------------------------
     colorful = sat[lum > 0.10]
     mean_sat = float(colorful.mean()) if colorful.size else 0.0
     vibrance = _clamp((TARGET_SAT - mean_sat) * 60, 0, MAX_VIBRANCE) \
         if mean_sat < TARGET_SAT else 0.0
+    vibrance *= vibrance_gain
+
+    # Black & white: no color work at all (the film has no color signature).
+    if is_bw:
+        temp_shift = 0.0
+        tint_shift = 0.0
+        vibrance = 0.0
 
     s = STRENGTH
     adjustments = {
@@ -126,6 +156,7 @@ def analyze(rgb):
         "TintShiftNorm":   round(tint_shift * s, 3),   # normalized -1..1
     }
     report = {
+        "profile":       p.get("label", "Generic color negative"),
         "black_point":   round(lo, 3),
         "white_point":   round(hi, 3),
         "median":        round(med, 3),
