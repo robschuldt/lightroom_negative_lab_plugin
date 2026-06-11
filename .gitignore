@@ -11,3 +11,4 @@ env/
 *.tiff
 .idea/
 .vscode/
+learned_profiles.json
