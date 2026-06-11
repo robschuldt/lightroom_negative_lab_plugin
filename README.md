@@ -27,6 +27,37 @@ For each selected photo it measures the converted look and applies, on top of NL
 All corrections are clamped per frame so nothing swings too hard. Tune everything
 in `analyzer.py` — `STRENGTH` scales the whole effect at once.
 
+## Film stock profiles
+
+Every film stock has its own character, so the optimizer adapts to it. Each stock has
+a profile in `film_profiles.py` that modulates the response — e.g. Portra stays warm
+and soft, Ektar gets a touch punchier with no extra saturation, slide film holds
+contrast back and protects highlights, and black & white skips all color work.
+
+You tag the stock once per roll. The plugin adds a **Film Stock** field to Lightroom;
+the first time you run Optimize on untagged frames it asks you to pick one and saves it
+to those frames. There is no reliable way to auto-detect the exact stock from a
+converted positive, so tagging is the dependable path — though `suggest_family()` can
+guess a broad family (warm negative / saturated / slide / B&W) from the image stats.
+
+To add a stock, add an entry to `PROFILES` in `film_profiles.py` and the matching
+`values` lists in `FilmStockMetadata.lua` and `OptimizeNegative.lua`.
+
+### Obscure stocks (on-demand lookup)
+
+For a stock that isn't in the built-in list, type its name in the **"...or type an
+obscure stock to look up"** box in the optimize dialog (it's stored under the photo's
+*Film Stock (custom name)* field). The server then looks up that stock's character via
+`film_lookup.py` and synthesizes a profile in the same schema, caching the result in
+`learned_profiles.json` so it's only looked up once.
+
+The lookup backend queries an LLM that knows film characteristics, so it needs a
+network connection and `ANTHROPIC_API_KEY` set in the server's environment. Optional
+env vars: `NLP_LOOKUP_MODEL` to pick the model. Raw lookup output is whitelisted and
+clamped to safe ranges before use, and `learned_profiles.json` is plain JSON you can
+hand-edit. With no key or network, unknown stocks simply fall back to a generic
+profile — nothing breaks.
+
 ## Setup
 
 ### 1. The local server (Python 3.9+)
@@ -73,5 +104,7 @@ undoes them and you can fine-tune by hand afterward.
 ## Files
 
 - `analyzer.py` — all the measurement + tuning constants
+- `film_profiles.py` — per-stock profiles + family suggestion
+- `film_lookup.py` — on-demand lookup of obscure stocks (cached to `learned_profiles.json`)
 - `server.py` — the local HTTP server (`/analyze`, `/health`)
-- `nlp-optimizer.lrdevplugin/` — the Lightroom plugin (`Info.lua`, `OptimizeNegative.lua`)
+- `nlp-optimizer.lrdevplugin/` — the Lightroom plugin (`Info.lua`, `FilmStockMetadata.lua`, `OptimizeNegative.lua`)
