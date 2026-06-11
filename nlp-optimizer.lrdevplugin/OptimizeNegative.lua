@@ -19,8 +19,82 @@ local LrPathUtils       = import 'LrPathUtils'
 local LrFileUtils       = import 'LrFileUtils'
 local LrHttp            = import 'LrHttp'
 local LrDialogs         = import 'LrDialogs'
+local LrView            = import 'LrView'
+local LrBinding         = import 'LrBinding'
 
 local SERVER_URL = 'http://127.0.0.1:8765/analyze'
+
+-- Popup choices for the film-stock dialog. Values must match film_profiles.py
+-- (and FilmStockMetadata.lua).
+local FILM_STOCK_ITEMS = {
+    { title = 'Generic color negative',        value = 'generic_color' },
+    { title = 'Kodak Portra 160',              value = 'kodak_portra_160' },
+    { title = 'Kodak Portra 400',              value = 'kodak_portra_400' },
+    { title = 'Kodak Portra 800',              value = 'kodak_portra_800' },
+    { title = 'Kodak Ektar 100',               value = 'kodak_ektar_100' },
+    { title = 'Kodak Gold 200',                value = 'kodak_gold_200' },
+    { title = 'Kodak UltraMax 400',            value = 'kodak_ultramax_400' },
+    { title = 'Fuji Pro 400H',                 value = 'fuji_pro_400h' },
+    { title = 'Fuji Superia 400',              value = 'fuji_superia_400' },
+    { title = 'Fuji C200',                     value = 'fuji_c200' },
+    { title = 'CineStill 800T',                value = 'cinestill_800t' },
+    { title = 'CineStill 50D',                 value = 'cinestill_50d' },
+    { title = 'Slide / E-6 (Velvia, Provia)',  value = 'slide_e6' },
+    { title = 'Black & white (generic)',       value = 'bw_generic' },
+    { title = 'Ilford HP5 Plus 400',           value = 'ilford_hp5_400' },
+    { title = 'Kodak Tri-X 400',               value = 'kodak_trix_400' },
+    { title = 'Kodak T-Max 100',               value = 'kodak_tmax_100' },
+}
+
+-- Read a photo's tagged film stock, or nil if not set.
+-- 'other' resolves to the free-text custom name the user typed.
+local function getFilmStock(photo)
+    local v = photo:getPropertyForPlugin(_PLUGIN, 'filmStock')
+    if v == 'other' then
+        local c = photo:getPropertyForPlugin(_PLUGIN, 'filmStockCustom')
+        if c ~= nil and c ~= '' then return c end
+        return nil
+    end
+    if v == nil or v == '' then return nil end
+    return v
+end
+
+-- Ask the user to pick one stock for this run (used when frames aren't tagged).
+-- Returns (enumValue, customName); customName is non-nil when an obscure stock
+-- was typed, in which case it is looked up by the server.
+local function chooseFilmStock(context)
+    local props = LrBinding.makePropertyTable(context)
+    props.stock = 'generic_color'
+    props.custom = ''
+    local f = LrView.osFactory()
+    local contents = f:column{
+        spacing = f:control_spacing(),
+        f:static_text{ title = 'Some selected photos have no film stock tagged.' },
+        f:row{
+            f:static_text{ title = 'Pick a stock:' },
+            f:popup_menu{
+                value = LrView.bind{ key = 'stock', object = props },
+                items = FILM_STOCK_ITEMS,
+                width = 240,
+            },
+        },
+        f:static_text{ title = '...or type an obscure stock to look up:' },
+        f:edit_field{
+            value = LrView.bind{ key = 'custom', object = props },
+            width_in_chars = 30,
+            immediate = true,
+        },
+    }
+    local result = LrDialogs.presentModalDialog{
+        title = 'NLP Optimizer - Film Stock',
+        contents = contents,
+    }
+    if result ~= 'ok' then return nil, nil end
+    local custom = props.custom
+    if custom then custom = custom:gsub('^%s+', ''):gsub('%s+$', '') end
+    if custom == '' then custom = nil end
+    return props.stock, custom
+end
 
 local function clamp(v, lo, hi)
     if v < lo then return lo elseif v > hi then return hi else return v end
@@ -66,11 +140,13 @@ local function exportPreview(photo)
     return exportedPath
 end
 
-local function optimizePhoto(photo)
+local function optimizePhoto(photo, filmStock)
     local exportedPath = exportPreview(photo)
     if not exportedPath then return false, 'export failed' end
 
-    local body = LrHttp.post(SERVER_URL, exportedPath,
+    local requestBody = 'film=' .. (filmStock or 'generic_color') ..
+                        '\npath=' .. exportedPath
+    local body = LrHttp.post(SERVER_URL, requestBody,
         { { field = 'Content-Type', value = 'text/plain' } })
 
     LrFileUtils.delete(exportedPath)
@@ -127,9 +203,38 @@ LrFunctionContext.callWithContext('nlpOptimize', function()
             return
         end
 
+        -- If any selected frame has no film stock tagged, ask once and apply
+        -- that choice to the untagged frames (so it sticks for next time).
+        local anyUnset = false
+        for _, photo in ipairs(photos) do
+            if not getFilmStock(photo) then anyUnset = true; break end
+        end
+
+        local chosenEnum, chosenCustom = nil, nil
+        if anyUnset then
+            LrFunctionContext.callWithContext('nlpChooseFilm', function(ctx)
+                chosenEnum, chosenCustom = chooseFilmStock(ctx)
+            end)
+            if not chosenEnum and not chosenCustom then return end   -- user cancelled
+            catalog:withWriteAccessDo('Set Film Stock', function()
+                for _, photo in ipairs(photos) do
+                    if not getFilmStock(photo) then
+                        if chosenCustom then
+                            photo:setPropertyForPlugin(_PLUGIN, 'filmStock', 'other')
+                            photo:setPropertyForPlugin(_PLUGIN, 'filmStockCustom', chosenCustom)
+                        else
+                            photo:setPropertyForPlugin(_PLUGIN, 'filmStock', chosenEnum)
+                        end
+                    end
+                end
+            end)
+        end
+
+        local fallback = chosenCustom or chosenEnum or 'generic_color'
         local done, failed, lastError = 0, 0, nil
         for _, photo in ipairs(photos) do
-            local ok, err = optimizePhoto(photo)
+            local stock = getFilmStock(photo) or fallback
+            local ok, err = optimizePhoto(photo, stock)
             if ok then done = done + 1 else failed = failed + 1; lastError = err end
         end
 
