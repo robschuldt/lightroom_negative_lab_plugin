@@ -63,13 +63,23 @@ profile — nothing breaks.
 ### 1. The local server (Python 3.9+)
 
 ```bash
-cd nlp-optimizer
+git clone https://github.com/robschuldt/lightroom_negative_lab_plugin.git
+cd lightroom_negative_lab_plugin
 pip install -r requirements.txt
 python server.py
 ```
 
 Leave it running. It listens only on `127.0.0.1:8765` — it is never exposed to
-the network.
+the network. Check it's up by opening <http://127.0.0.1:8765/health>, which should
+return `{"status":"ok"}`.
+
+Optional — to look up obscure stocks that aren't built in, set an Anthropic API key
+before starting the server (without it, unknown stocks just fall back to generic):
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...     # Windows PowerShell: $env:ANTHROPIC_API_KEY="sk-ant-..."
+python server.py
+```
 
 ### 2. The Lightroom plugin
 
